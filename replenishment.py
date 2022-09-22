@@ -3,6 +3,9 @@ from urllib.parse import urljoin
 import csv
 import psycopg2
 import numpy as np
+import configparser
+import boto3
+import json
 
 # Set authentication and server parameters
 # Refer here for auth servers and api endpoints: https://manual.firstresonance.io/api/access-tokens
@@ -32,14 +35,15 @@ CREATE_KIT_ITEM_MUTATION = '''
 
 class KitRequest:
 
-    def __init__(self):
+    def __init__(self, assigned_to_id):
+        input('Begin Replenishment?')
         self.api_creds = self.grab_creds('ion/api/creds')
         self.db_creds = self.grab_creds('ion/db/psql')
         self.access_token = self.get_access_token()
         self.part_kit_id = None
         self.inventory_config = self.get_csv_data()
         self.current_inventory_dict = self.get_current_inventory()
-        self.assigned_to_id = 373
+        self.assigned_to_id = assigned_to_id
 
     def grab_creds(self, sec_id: any):
         client = boto3.client('secretsmanager')
@@ -134,7 +138,7 @@ class KitRequest:
         print(f"Created part kit: {part_kit_id}")
         return part_kit_id
 
-    def create_part_kit_item(self,part_kit_id ,part_id, request_quantity):
+    def create_part_kit_item(self, part_kit_id, part_id, request_quantity):
         #print(part_kit_id)
         kit_item_payload = {
             'partKitId': part_kit_id,
@@ -155,11 +159,9 @@ class KitRequest:
     def check_inventory_levels(self):
         """Checks inventory level vs desired min/max for part/location."""
         part_kit_id = None
-        for part in self.inventory_config:  #inventory config
-            #print(part)
+        for part in self.inventory_config:
             part_id = part['part_id']
-            location_id = part['location_id']
-            #print(self.current_inventory_dict)
+            location_id = part['lineside_location_id']
             inventory_qty = self.current_inventory_dict.get((int(part_id), int(location_id)), 0)
             if inventory_qty < float(part['min_qty']):
                 request_quantity = float(part['max_qty']) - inventory_qty
@@ -170,7 +172,10 @@ class KitRequest:
 
 def main():
     try:
-        kitrequest = KitRequest()
+        config = configparser.ConfigParser()
+        config.read('prodReplenishment.ini')
+        assigned_to_id = config['DEFAULT']['assigned_to_id']
+        kitrequest = KitRequest(assigned_to_id)
         kitrequest.check_inventory_levels()
     except Exception as e:
         print(f'An error occurred while running script: {e}')
