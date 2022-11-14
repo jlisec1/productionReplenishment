@@ -35,7 +35,7 @@ CREATE_KIT_ITEM_MUTATION = '''
 
 class KitRequest:
 
-    def __init__(self, assigned_to_id):
+    def __init__(self, assigned_to_id, delivery_location):
         input('Begin Replenishment?')
         self.api_creds = self.grab_creds('ion/api/creds')
         self.db_creds = self.grab_creds('ion/db/psql')
@@ -44,6 +44,7 @@ class KitRequest:
         self.inventory_config = self.get_csv_data()
         self.current_inventory_dict = self.get_current_inventory()
         self.assigned_to_id = assigned_to_id
+        self.delivery_location_id = delivery_location
 
     def grab_creds(self, sec_id: any):
         client = boto3.client('secretsmanager')
@@ -116,7 +117,7 @@ class KitRequest:
         cursor = conn.cursor()
 
         cursor.execute(
-            "select parts.id, locations.name, parts_inventory.quantity as inventory_qty from epirussystems_com.parts join epirussystems_com.parts_inventory on parts.id = parts_inventory.part_id join epirussystems_com.locations on parts_inventory.location_id = locations.id")
+            "select parts.id, locations.id, sum(parts_inventory.quantity) as inventory_qty from epirussystems_com.parts join epirussystems_com.parts_inventory on parts.id = parts_inventory.part_id join epirussystems_com.locations on parts_inventory.location_id = locations.id where locations.id = 711 group by parts.id, locations.id")
 
         resul = cursor.fetchall();
 
@@ -131,7 +132,8 @@ class KitRequest:
         """Create part kits by calling API."""
         print('creating kit')
         kit_payload = {
-            'assignedToId': self.assigned_to_id
+            'assignedToId': self.assigned_to_id,
+            'deliveryLocationId': self.delivery_location_id
         }
         part_kit = self.call_api(CREATE_KIT_MUTATION, {'input':kit_payload})
         part_kit_id = part_kit['createPartKit']['partKit']['id']
@@ -153,6 +155,7 @@ class KitRequest:
         current_inventory_dict = {}
         current_inventory = self.get_current_inv()
         for item in current_inventory:
+            #print(item['part_id'],item['location_id'],item['quantity'])
             current_inventory_dict[(item['part_id'], item['location_id'])] = item['quantity']
         return current_inventory_dict
 
@@ -162,12 +165,15 @@ class KitRequest:
         for part in self.inventory_config:
             part_id = part['part_id']
             location_id = part['lineside_location_id']
-            inventory_qty = self.current_inventory_dict.get((int(part_id), int(location_id)), 0)
+            inventory_qty = self.current_inventory_dict.get((int(part_id), int(location_id)),0)
+            #print(part_id,location_id,inventory_qty)
             if inventory_qty < float(part['min_qty']):
                 request_quantity = float(part['max_qty']) - inventory_qty
                 if part_kit_id is None:
                     part_kit_id = self.create_part_kit()
                 self.create_part_kit_item(part_kit_id, part_id, request_quantity)
+            else:
+                print(f'{part_id} quantity is {inventory_qty} at location: {location_id}')
 
 
 def main():
@@ -175,8 +181,10 @@ def main():
         config = configparser.ConfigParser()
         config.read('prodReplenishment.ini')
         assigned_to_id = config['DEFAULT']['assigned_to_id']
-        kitrequest = KitRequest(assigned_to_id)
+        delivery_location = config['DEFAULT']['delivery_location_id']
+        kitrequest = KitRequest(assigned_to_id, delivery_location)
         kitrequest.check_inventory_levels()
+        print('Inventory levels checked')
     except Exception as e:
         print(f'An error occurred while running script: {e}')
 
