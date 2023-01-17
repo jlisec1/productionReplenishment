@@ -5,10 +5,10 @@ from replenishment import main as replenish
 
 class ProductionReplenishment:
 
-    def __init__(self, loc):
+    def __init__(self, loc, replenishment_frequency):
         input('Start?')
         self.counter = 0
-        self.size = 10
+        self.size = int(replenishment_frequency)
         self.loc = loc
 
     def play(self):
@@ -39,7 +39,8 @@ def main():
         config = configparser.ConfigParser()
         config.read('prodReplenishment.ini')
         loc = config['DEFAULT']['consumption_loc_id']
-        prod_rep = ProductionReplenishment(loc)
+        replenishment_frequency = config['MAIN']['replenishment_frequency']
+        prod_rep = ProductionReplenishment(loc, replenishment_frequency)
         prod_rep.play()
     except Exception as e:
         print(f'An error occurred while running script: {e}',input("Press enter to proceed..."))

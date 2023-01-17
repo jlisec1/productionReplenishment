@@ -168,7 +168,7 @@ class KitRequest:
             inventory_qty = self.current_inventory_dict.get((int(part_id), int(location_id)),0)
             #print(part_id,location_id,inventory_qty)
             if inventory_qty < float(part['min_qty']):
-                request_quantity = float(part['max_qty']) - inventory_qty
+                request_quantity = float(part['max_qty']) - inventory_qty #request quantity is max - current (gets you back to max quantity)
                 if part_kit_id is None:
                     part_kit_id = self.create_part_kit()
                 self.create_part_kit_item(part_kit_id, part_id, request_quantity)

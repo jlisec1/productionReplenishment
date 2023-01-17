@@ -137,7 +137,7 @@ class AbomsRequest:
 
         cursor = conn.cursor()
 
-        query1 = "with parents as(select ai.id parent_abom_id, pi.serial_number parent_serial, part_number,ai.part_id parent_part_id, pi.id as parent_part_inventory_id from epirussystems_com.abom_items ai join epirussystems_com.parts_inventory pi on ai.part_inventory_id = pi.id join epirussystems_com.parts p on pi.part_id = p.id where p.part_number = %s and revision = %s) select parent_serial,child_abom_item_id, cast(child_items.part_id as text), cast(mbom_substitute.part_id as text) alternate_part_id, expected_quantity_per,child_items.quantity, cast(child_items._etag as text) from epirussystems_com.abom_edges join parents on parent_abom_item_id=parents.parent_abom_id join epirussystems_com.abom_items child_items on abom_edges.child_abom_item_id = child_items.id left join epirussystems_com.parts_inventory on child_items.part_inventory_id = parts_inventory.id left join epirussystems_com.parts on child_items.part_id = parts.id left join epirussystems_com.mbom_substitute on origin_mbom_item_id=mbom_substitute.mbom_item_id where tracking_type is null or tracking_type = 'lot'"
+        query1 = "with parents as(select ai.id parent_abom_id, pi.serial_number parent_serial, part_number,ai.part_id parent_part_id, pi.id as parent_part_inventory_id from epirussystems_com.abom_items ai join epirussystems_com.parts_inventory pi on ai.part_inventory_id = pi.id join epirussystems_com.parts p on pi.part_id = p.id where p.part_number = %s and revision = %s) select parent_serial,child_abom_item_id, cast(child_items.part_id as text), cast(mbom_substitute.part_id as text) alternate_part_id, expected_quantity_per,child_items.quantity, cast(child_items._etag as text) from epirussystems_com.abom_edges join parents on parent_abom_item_id=parents.parent_abom_id join epirussystems_com.abom_items child_items on abom_edges.child_abom_item_id = child_items.id left join epirussystems_com.parts_inventory on child_items.part_inventory_id = parts_inventory.id left join epirussystems_com.parts on child_items.part_id = parts.id left join epirussystems_com.mbom_substitute on origin_mbom_item_id=mbom_substitute.mbom_item_id where child_items.part_id <> 5888 and tracking_type is null or tracking_type = 'lot'"
         cursor.execute(query1, [self.part, self.rev])
 
         resul = cursor.fetchall();
@@ -154,15 +154,17 @@ class AbomsRequest:
         bm1 = (self.df['parent_sn'] == self.serial)
         bm = (self.df['child_part_id'] == part_id)
         dff = self.df[(bm1 & bm)]
+        #print(dff['child_part_id'],dff['expected_quantity_per'])
         my_col = dff['alternate_part_id']
-        #print(dff['child_part_id'],dff['quantity_installed'])
-        if int(dff['quantity_installed']) == 0:
+        # print(dff['child_part_id'],dff['quantity_installed'])
+        if dff['quantity_installed'].values[:1] < dff['expected_quantity_per'].values[:1]: # if the installed quantity is less than expected
+            #print('here1')
             conn = self.connect()
             cursor = conn.cursor()
             query2 = "select parts_inventory.id, quantity from epirussystems_com.parts_inventory join epirussystems_com.parts on parts_inventory.part_id = parts.id where part_id = %s and tracking_type isnull and location_id = %s and quantity > 0"
-            # in the future I want to make location a variable too
             for part_id in dff['child_part_id']:
-                #print(part_id)
+                #print('here2')
+                # print(part_id)
                 cursor.execute(query2, [part_id, loc])
                 resull = cursor.fetchall()
                 if not resull: #if the result of the query shows that this part cannot be found at the location
@@ -191,12 +193,12 @@ class AbomsRequest:
                             # print('payload built')
                             print('Building aBOM with alternate')
                             return kit_item_payload
-                    else: #if no alternate part was found
+                    else: # if no alternate part was found
                         print('System was unable to find an alternate for: ' + str(part_id))
                 else:
+                    #print('here3')
                     if int(resull[0][1]) >= int(dff['expected_quantity_per']): #if the quantity at the location is greater than the quantity to be installed
                         ids = dff['child_abom_item_id'].tolist()
-                        #print(ids)
                         qty = dff['expected_quantity_per'].tolist()
                         #print(qty)
                         etag = dff['etag'].tolist()
@@ -216,8 +218,10 @@ class AbomsRequest:
                         print("INVENTORY TOO LOW FOR PART: " + part_id)
                         input('Did you inform the supervisor of the error y/n? : ')
                         return {'id':'-1'}
-        print('already fulfilled')
-        return {'id':'-1'}
+        elif dff['quantity_installed'].values[:1] >= dff['expected_quantity_per'].values[:1]:
+            print('already fulfilled')
+            # print('here4')
+            return {'id':'-1'}
 
 
     # updates item in payload from user input
@@ -225,14 +229,14 @@ class AbomsRequest:
         print(f'-----------------------Consuming From {loc}-----------------------')
         bm = (self.df['parent_sn']==self.serial)
         dff = self.df[bm]
-        #print(dff) #print abom data frame for serial number given
+        # print(dff) #print abom data frame for serial number given
         for part_id in dff['child_part_id']:
             #print(dff['quantity_installed'], dff['child_part_id'])
             kit = self.build_payload(part_id,loc)
             #print(kit)
             if int(kit['id']) >= 0:
                 self.call_api(UPDATE_ABOM_MUTATION, {'input': kit})
-                #print(f"Added part_id {part_id} to ABOM")
+                # print(f"Added part_id {part_id} to ABOM")
         print(f"***ALL PARTS ADDED TO ABOM*** {self.serial}")
 
 
