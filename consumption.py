@@ -44,7 +44,7 @@ class AbomsRequest:
         self.api_creds = self.grab_creds('ion/api/creds')
         self.db_creds = self.grab_creds('ion/db/psql')
         self.part = input('Enter the part_number for the assembly you just completed: ').upper()
-        self.rev = input('Enter the revision for the part number you just completed: ').upper()
+        self.rev =  input('Enter the revision for the part number you just completed: ').upper()
         self.serial = input('Enter the serial number of the unit you just completed: ')
         self.flag = self.part_check()
         if self.flag:
@@ -109,7 +109,7 @@ class AbomsRequest:
     def close_run(self):
         pass
 
-    def part_check(self):
+    def part_check(self): #checks to see if the requested part is in fact in ion
 
         conn = self.connect()
 
@@ -161,11 +161,11 @@ class AbomsRequest:
             #print('here1')
             conn = self.connect()
             cursor = conn.cursor()
-            query2 = "select parts_inventory.id, quantity from epirussystems_com.parts_inventory join epirussystems_com.parts on parts_inventory.part_id = parts.id where part_id = %s and tracking_type isnull and location_id = %s and quantity > 0"
+            query2 = "select parts_inventory.id, parts_inventory.quantity from epirussystems_com.parts_inventory left join epirussystems_com.abom_items on parts_inventory.id = abom_items.part_inventory_id left join epirussystems_com.abom_edges on abom_items.id = abom_edges.parent_abom_item_id left join epirussystems_com.purchase_order_line_inventories on parts_inventory.id = purchase_order_line_inventories.part_inventory_id  left join epirussystems_com.purchase_order_lines on purchase_order_line_inventories.purchase_order_line_id = purchase_order_lines.id join epirussystems_com.parts on parts_inventory.part_id = parts.id where parts_inventory.part_id = %s and tracking_type isnull and location_id = %s and parts_inventory.quantity > %s group by parts_inventory.id, parts_inventory.quantity, status"
             for part_id in dff['child_part_id']:
                 #print('here2')
-                # print(part_id)
-                cursor.execute(query2, [part_id, loc])
+                #print(part_id)
+                cursor.execute(query2, [part_id, loc, int(dff['expected_quantity_per'])])
                 resull = cursor.fetchall()
                 if not resull: #if the result of the query shows that this part cannot be found at the location
                     print('CANNOT FIND INVENTORY FOR PART_ID ' + str(part_id) + ' AT LOCATION_ID:' + str(loc))
@@ -174,7 +174,7 @@ class AbomsRequest:
                         alt = dff.iloc[0,3]
                         conn = self.connect()
                         cursor = conn.cursor()
-                        query2 = "select parts_inventory.id, quantity from epirussystems_com.parts_inventory join epirussystems_com.parts on parts_inventory.part_id = parts.id where part_id = %s and tracking_type isnull and location_id = %s and quantity > 0"
+                        query2 = "select parts_inventory.id, parts_inventory.quantity from epirussystems_com.parts_inventory left join epirussystems_com.abom_items on parts_inventory.id = abom_items.part_inventory_id left join epirussystems_com.abom_edges on abom_items.id = abom_edges.parent_abom_item_id left join epirussystems_com.purchase_order_line_inventories on parts_inventory.id = purchase_order_line_inventories.part_inventory_id  left join epirussystems_com.purchase_order_lines on purchase_order_line_inventories.purchase_order_line_id = purchase_order_lines.id join epirussystems_com.parts on parts_inventory.part_id = parts.id where parts_inventory.part_id = %s and tracking_type isnull and location_id = %s and parts_inventory.quantity > 0 group by parts_inventory.id, parts_inventory.quantity, status"
                         cursor.execute(query2, [alt, loc])
                         resulla = cursor.fetchall()
                         if int(resulla[0][1]) >= int(dff['expected_quantity_per']):  # if the quantity at the location is greater than the quantity to be installed
@@ -196,7 +196,6 @@ class AbomsRequest:
                     else: # if no alternate part was found
                         print('System was unable to find an alternate for: ' + str(part_id))
                 else:
-                    #print('here3')
                     if int(resull[0][1]) >= int(dff['expected_quantity_per']): #if the quantity at the location is greater than the quantity to be installed
                         ids = dff['child_abom_item_id'].tolist()
                         qty = dff['expected_quantity_per'].tolist()
