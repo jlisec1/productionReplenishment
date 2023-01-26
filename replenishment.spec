@@ -8,7 +8,7 @@ a = Analysis(
     ['replenishment.py'],
     pathex=[],
     binaries=[],
-    datas=[('prodReplenishment.ini', '.'), ('part_qty_config.csv', '.')],
+    datas=[('part_qty_config.csv', '.'), ('prodReplenishment.ini', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
