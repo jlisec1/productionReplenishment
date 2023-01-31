@@ -5,54 +5,38 @@ from urllib.parse import urljoin
 import psycopg2
 import boto3
 import json
+import queries
 
 # Set authentication and server parameters
 # Refer here for auth servers and api endpoints: https://manual.firstresonance.io/api/access-tokens
 API_URL = 'https://api.ion-gov.com'
 AUTHENTICATION_SERVER = 'auth.ion-gov.com'
 
-
-UPDATE_ABOM_MUTATION = '''
-    mutation updateAbom($input: UpdateABomItemInput!){
-      updateAbomItem(input:$input){
-        abomItem{
-          id
-        }
-      }
-    }
-'''
-
-UPDATE_RUN_STEP_STATUS = '''
-    mutation updateRunStepStatus($input: UpdateRunStepInput!){
-      updateRunStep(input:$input){
-        runStep{
-          status
-        }
-      }
-    }
-'''
-
 AUTH_URL = 'auth.ion-gov.com'
 API_URL = 'api.ion-gov.com'
 REQUEST_URL = f'https://{API_URL}/graphql'
+ACCESS_TOKEN_URL = f'https://{AUTH_URL}' \
+    '/auth/realms/api-keys/protocol/openid-connect/token'
 
 
 class AbomsRequest:
 
     #init function to set all variables initially
-    def __init__(self):
+    def __init__(self, loc):
         self.api_creds = self.grab_creds('ion/api/creds')
         self.db_creds = self.grab_creds('ion/db/psql')
-        self.part = input('Enter the part_number for the assembly you just completed: ').upper()
+        self.part =  input('Enter the part_number for the assembly you just completed: ').upper()
         self.rev =  input('Enter the revision for the part number you just completed: ').upper()
         self.serial = input('Enter the serial number of the unit you just completed: ')
         self.flag = self.part_check()
+        self.loc = loc
+        self.access_token = self._generate_access_token()
+        self.inventory = self.get_inv() #need to figure out
         if self.flag:
             print('One or more of the inputs are incorrect. Try again.')
             self.__init__()
         else:
             pass
-        self.access_token = self.get_access_token()
         self.df = self.gimme_aboms()
 
     def grab_creds(self, sec_id: any):
@@ -64,23 +48,36 @@ class AbomsRequest:
     def set_part_info(self):
         self.serial = input('Enter the serial number of the unit you just completed: ')
 
-    # gets access token for aws
-    def get_access_token(self):
-        payload = {
+    def _generate_access_token(self):
+        data = {
             'grant_type': 'client_credentials',
             'client_id': self.api_creds['clientId'],
-            'client_secret': self.api_creds['clientSecret'],
-            'audience': API_URL
+            'client_secret': self.api_creds['clientSecret']
         }
+        url = ACCESS_TOKEN_URL
+        with requests.post(url, data=data) as response:
+            response.raise_for_status()
+            self.access_token = response.json()['access_token']
+        return response.json()['access_token']
 
-        headers = {'content-type': 'application/x-www-form-urlencoded'}
-
-        auth_url = urljoin(f'https://{AUTHENTICATION_SERVER}', '/auth/realms/api-keys/protocol/openid-connect/token',
-                        'oauth/token')
-        res = requests.post(auth_url, data=payload, headers=headers)
-        if res.status_code != 200:
-            raise RuntimeError('An error occurred in the API request')
-        return res.json()['access_token']
+    def _request(self, query: dict):  # what does this function do?
+        retry = True
+        while True:
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+            url = REQUEST_URL
+            with requests.post(url, headers=headers, json=query) as response:
+                if (
+                    retry and
+                    response.status_code == requests.codes.unauthorized
+                ):
+                    self._generate_access_token()
+                    retry = False
+                    continue
+                response.raise_for_status()
+                return response.json()
 
     # sends query using API to graphQL
     def call_api(self, query, variables):
@@ -148,103 +145,100 @@ class AbomsRequest:
         return df
         #print(df)
 
+    def get_inv(self):
+        """"""
+        query = {
+            'query': queries.GET_INV,
+            'variables': {
+                'filters': {
+                    "locationId": {"eq": self.loc},
+                    "status": {"eq": "AVAILABLE"}
+                }
+            }
+        }
+        r = self._request(query)
+        num = len(r['data']['partInventories']['edges'])
+        d_list = []
+        for i in np.arange(1, num):
+            d_list.append(r['data']['partInventories']['edges'][i]['node'])
+        df = pd.DataFrame.from_records(d_list)
+        return df
+
+
     #returns the part_inventory ID that we are going to use
     #for part in df returned above return the inventory ID we want
-    def build_payload(self, part_id, loc):
+    def build_payload(self, part_id):
         bm1 = (self.df['parent_sn'] == self.serial)
         bm = (self.df['child_part_id'] == part_id)
         dff = self.df[(bm1 & bm)]
-        #print(dff['child_part_id'],dff['expected_quantity_per'])
         my_col = dff['alternate_part_id']
-        # print(dff['child_part_id'],dff['quantity_installed'])
+        bma = (self.inventory['partId'] == int(part_id))
+        inv = self.inventory[bma]
+        row = (inv.query('quantityAvailable == quantityAvailable.max()').tail(1))
         if dff['quantity_installed'].values[:1] < dff['expected_quantity_per'].values[:1]: # if the installed quantity is less than expected
-            #print('here1')
-            conn = self.connect()
-            cursor = conn.cursor()
-            query2 = "select parts_inventory.id, parts_inventory.quantity from epirussystems_com.parts_inventory left join epirussystems_com.abom_items on parts_inventory.id = abom_items.part_inventory_id left join epirussystems_com.abom_edges on abom_items.id = abom_edges.parent_abom_item_id left join epirussystems_com.purchase_order_line_inventories on parts_inventory.id = purchase_order_line_inventories.part_inventory_id  left join epirussystems_com.purchase_order_lines on purchase_order_line_inventories.purchase_order_line_id = purchase_order_lines.id join epirussystems_com.parts on parts_inventory.part_id = parts.id where parts_inventory.part_id = %s and tracking_type isnull and location_id = %s and parts_inventory.quantity > %s group by parts_inventory.id, parts_inventory.quantity, status"
-            for part_id in dff['child_part_id']:
-                #print('here2')
-                #print(part_id)
-                cursor.execute(query2, [part_id, loc, int(dff['expected_quantity_per'])])
-                resull = cursor.fetchall()
-                if not resull: #if the result of the query shows that this part cannot be found at the location
-                    print('CANNOT FIND INVENTORY FOR PART_ID ' + str(part_id) + ' AT LOCATION_ID:' + str(loc))
-                    print('looking for alternate')
-                    if not my_col.isna().any(): #if the alternate part cell is not null (there exists an alternate part)
-                        alt = dff.iloc[0,3]
-                        conn = self.connect()
-                        cursor = conn.cursor()
-                        query2 = "select parts_inventory.id, parts_inventory.quantity from epirussystems_com.parts_inventory left join epirussystems_com.abom_items on parts_inventory.id = abom_items.part_inventory_id left join epirussystems_com.abom_edges on abom_items.id = abom_edges.parent_abom_item_id left join epirussystems_com.purchase_order_line_inventories on parts_inventory.id = purchase_order_line_inventories.part_inventory_id  left join epirussystems_com.purchase_order_lines on purchase_order_line_inventories.purchase_order_line_id = purchase_order_lines.id join epirussystems_com.parts on parts_inventory.part_id = parts.id where parts_inventory.part_id = %s and tracking_type isnull and location_id = %s and parts_inventory.quantity > 0 group by parts_inventory.id, parts_inventory.quantity, status"
-                        cursor.execute(query2, [alt, loc])
-                        resulla = cursor.fetchall()
-                        if int(resulla[0][1]) >= int(dff['expected_quantity_per']):  # if the quantity at the location is greater than the quantity to be installed
-                            ids = dff['child_abom_item_id'].tolist()
-                            # print(ids)
-                            qty = dff['expected_quantity_per'].tolist()
-                            # print(qty)
-                            etag = dff['etag'].tolist()
-                            conn.close()
-                            kit_item_payload = {
-                                # builds a payload that includes the specific part inventory that the abom will install from
-                                'id': ids[0],
-                                'quantity': qty[0],
-                                'etag': etag[0],
-                                'partInventoryId': resulla[0][0]}
-                            # print('payload built')
-                            print('Building aBOM with alternate')
-                            return kit_item_payload
-                    else: # if no alternate part was found
-                        print('System was unable to find an alternate for: ' + str(part_id))
-                else:
-                    if int(resull[0][1]) >= int(dff['expected_quantity_per']): #if the quantity at the location is greater than the quantity to be installed
+            if len(inv.index) == 0: # if the dataframe is empty (therefore there is no inv at the location
+                print('CANNOT FIND INVENTORY FOR PART_ID ' + str(part_id) + ' AT LOCATION_ID:' + str(self.loc))
+                print('LOOKING FOR ALTERNATE')
+                if not my_col.isna().any(): #if the alternate part cell is not null (there exists an alternate part)
+                    alt = dff.iloc[0,3]
+                    altbma = (self.inventory['partId'] == int(alt))
+                    altinv = self.inventory[altbma]
+                    altrow = (altinv.query('quantityAvailable == quantityAvailable.max()').tail(1))
+                    altquant = altrow['quantityAvailable'].tolist()
+                    if len(altinv.index)==0:
+                        print(f'NO QUANTITY OF ALTERNATE {alt} FOUND')
+                        return {'id': '-1'}
+                    elif (altquant[0]) >= int(dff['expected_quantity_per']):  # if the quantity at the location is greater than the quantity to be installed
+                        altinvid = altrow['id'].tolist()
                         ids = dff['child_abom_item_id'].tolist()
                         qty = dff['expected_quantity_per'].tolist()
-                        #print(qty)
                         etag = dff['etag'].tolist()
-                        conn.close()
-                        kit_item_payload = { #builds a payload that includes the specific part inventory that the abom will install from
+                        kit_item_payload = { # builds a payload that includes the specific part inventory that the abom will install from
                             'id': ids[0],
-                            'quantity': qty[0] ,
+                            'quantity': qty[0],
                             'etag': etag[0],
-                            'partInventoryId':resull[0][0]}
-                        #print('payload built')
+                            'partInventoryId': altinvid[0]}
+                        print('BUILDING ABOM WITH ALTERNATE')
                         return kit_item_payload
-                    elif int(resull[0][1]) < int(dff['expected_quantity_per']):
-                        print("INVENTORY TOO LOW FOR PART: " + part_id)
-                        input('Did you inform the supervisor of the error y/n? : ')
-                        return {'id':'-1'}
-                    elif int(resull[0][1]) == 0:
-                        print("INVENTORY TOO LOW FOR PART: " + part_id)
-                        input('Did you inform the supervisor of the error y/n? : ')
-                        return {'id':'-1'}
+                    else: # if there is none of the alternate at the location
+                        print(f'NO QUANTITY OF ALTERNATE {alt} FOUND')
+                        return {'id': '-1'}
+                else: # if no alternate part was found
+                    print('SYSTEM DID NOT FIND ALTERNATE FOR: ' + str(part_id))
+                    return {'id': '-1'}
+            else:
+                if int(row['quantityAvailable']) >= int(dff['expected_quantity_per']): # if the quantity at the location is greater than the quantity to be installed
+                    ids = dff['child_abom_item_id'].tolist()
+                    invid = row['id'].tolist()
+                    qty = dff['expected_quantity_per'].tolist()
+                    etag = dff['etag'].tolist()
+                    kit_item_payload = { # builds a payload that includes the specific part inventory that the abom will install from
+                        'id': ids[0],
+                        'quantity': qty[0] ,
+                        'etag': etag[0],
+                        'partInventoryId':invid[0]}
+                    return kit_item_payload
         elif dff['quantity_installed'].values[:1] >= dff['expected_quantity_per'].values[:1]:
             print('already fulfilled')
-            # print('here4')
             return {'id':'-1'}
 
 
-    # updates item in payload from user input
-    def update_abom_item(self,loc):
-        print(f'-----------------------Consuming From {loc}-----------------------')
+    def consume_to_abom(self): # updates item in payload from user input
+        print(f'-----------------------Consuming From {self.loc}-----------------------')
         bm = (self.df['parent_sn']==self.serial)
         dff = self.df[bm]
-        # print(dff) #print abom data frame for serial number given
         for part_id in dff['child_part_id']:
-            #print(dff['quantity_installed'], dff['child_part_id'])
-            kit = self.build_payload(part_id,loc)
-            #print(kit)
+            kit = self.build_payload(part_id)
             if int(kit['id']) >= 0:
-                self.call_api(UPDATE_ABOM_MUTATION, {'input': kit})
-                # print(f"Added part_id {part_id} to ABOM")
+                self.call_api(queries.UPDATE_ABOM_MUTATION, {'input': kit})
         print(f"***ALL PARTS ADDED TO ABOM*** {self.serial}")
 
 
 def main(loc):
     try:
-        abomsreq = AbomsRequest()
-        #abomsreq.gimme_aboms()
+        abomsreq = AbomsRequest(loc)
         abomsreq.part_check()
-        abomsreq.update_abom_item(loc)
+        abomsreq.consume_to_abom()
     except Exception as e:
         print(f'An error occurred while running script: {e}')
 
