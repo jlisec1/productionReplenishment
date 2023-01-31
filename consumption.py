@@ -22,15 +22,16 @@ ACCESS_TOKEN_URL = f'https://{AUTH_URL}' \
 class AbomsRequest:
 
     #init function to set all variables initially
-    def __init__(self):
+    def __init__(self, loc):
         self.api_creds = self.grab_creds('ion/api/creds')
         self.db_creds = self.grab_creds('ion/db/psql')
-        self.part = 'test_part' # input('Enter the part_number for the assembly you just completed: ').upper()
-        self.rev =  'A' # input('Enter the revision for the part number you just completed: ').upper()
+        self.part =  input('Enter the part_number for the assembly you just completed: ').upper()
+        self.rev =  input('Enter the revision for the part number you just completed: ').upper()
         self.serial = input('Enter the serial number of the unit you just completed: ')
         self.flag = self.part_check()
+        self.loc = loc
         self.access_token = self._generate_access_token()
-        self.inventory = self.get_inv(loc=711) #need to figure out
+        self.inventory = self.get_inv() #need to figure out
         if self.flag:
             print('One or more of the inputs are incorrect. Try again.')
             self.__init__()
@@ -144,13 +145,13 @@ class AbomsRequest:
         return df
         #print(df)
 
-    def get_inv(self, loc):
+    def get_inv(self):
         """"""
         query = {
             'query': queries.GET_INV,
             'variables': {
                 'filters': {
-                    "locationId": {"eq": loc},
+                    "locationId": {"eq": self.loc},
                     "status": {"eq": "AVAILABLE"}
                 }
             }
@@ -166,7 +167,7 @@ class AbomsRequest:
 
     #returns the part_inventory ID that we are going to use
     #for part in df returned above return the inventory ID we want
-    def build_payload(self, part_id, loc):
+    def build_payload(self, part_id):
         bm1 = (self.df['parent_sn'] == self.serial)
         bm = (self.df['child_part_id'] == part_id)
         dff = self.df[(bm1 & bm)]
@@ -176,14 +177,18 @@ class AbomsRequest:
         row = (inv.query('quantityAvailable == quantityAvailable.max()').tail(1))
         if dff['quantity_installed'].values[:1] < dff['expected_quantity_per'].values[:1]: # if the installed quantity is less than expected
             if len(inv.index) == 0: # if the dataframe is empty (therefore there is no inv at the location
-                print('CANNOT FIND INVENTORY FOR PART_ID ' + str(part_id) + ' AT LOCATION_ID:' + str(loc))
-                print('looking for alternate')
+                print('CANNOT FIND INVENTORY FOR PART_ID ' + str(part_id) + ' AT LOCATION_ID:' + str(self.loc))
+                print('LOOKING FOR ALTERNATE')
                 if not my_col.isna().any(): #if the alternate part cell is not null (there exists an alternate part)
                     alt = dff.iloc[0,3]
                     altbma = (self.inventory['partId'] == int(alt))
                     altinv = self.inventory[altbma]
                     altrow = (altinv.query('quantityAvailable == quantityAvailable.max()').tail(1))
-                    if int(altrow['quantityAvailable']) >= int(dff['expected_quantity_per']):  # if the quantity at the location is greater than the quantity to be installed
+                    altquant = altrow['quantityAvailable'].tolist()
+                    if len(altinv.index)==0:
+                        print(f'NO QUANTITY OF ALTERNATE {alt} FOUND')
+                        return {'id': '-1'}
+                    elif (altquant[0]) >= int(dff['expected_quantity_per']):  # if the quantity at the location is greater than the quantity to be installed
                         altinvid = altrow['id'].tolist()
                         ids = dff['child_abom_item_id'].tolist()
                         qty = dff['expected_quantity_per'].tolist()
@@ -193,15 +198,13 @@ class AbomsRequest:
                             'quantity': qty[0],
                             'etag': etag[0],
                             'partInventoryId': altinvid[0]}
-                        print('Building aBOM with alternate')
+                        print('BUILDING ABOM WITH ALTERNATE')
                         return kit_item_payload
                     else: # if there is none of the alternate at the location
-                        print(f'No quantity of alternative {alt} at location {loc}')
-                        input('Did you inform the supervisor of the low inventory?')
+                        print(f'NO QUANTITY OF ALTERNATE {alt} FOUND')
                         return {'id': '-1'}
                 else: # if no alternate part was found
-                    print('System was unable to find an alternate for: ' + str(part_id))
-                    input('Did you inform the supervisor of the low inventory?')
+                    print('SYSTEM DID NOT FIND ALTERNATE FOR: ' + str(part_id))
                     return {'id': '-1'}
             else:
                 if int(row['quantityAvailable']) >= int(dff['expected_quantity_per']): # if the quantity at the location is greater than the quantity to be installed
@@ -220,22 +223,22 @@ class AbomsRequest:
             return {'id':'-1'}
 
 
-    def consume_to_abom(self,loc): # updates item in payload from user input
-        print(f'-----------------------Consuming From {loc}-----------------------')
+    def consume_to_abom(self): # updates item in payload from user input
+        print(f'-----------------------Consuming From {self.loc}-----------------------')
         bm = (self.df['parent_sn']==self.serial)
         dff = self.df[bm]
         for part_id in dff['child_part_id']:
-            kit = self.build_payload(part_id,loc)
+            kit = self.build_payload(part_id)
             if int(kit['id']) >= 0:
                 self.call_api(queries.UPDATE_ABOM_MUTATION, {'input': kit})
         print(f"***ALL PARTS ADDED TO ABOM*** {self.serial}")
 
 
-def main():
+def main(loc):
     try:
-        abomsreq = AbomsRequest()
+        abomsreq = AbomsRequest(loc)
         abomsreq.part_check()
-        abomsreq.consume_to_abom(loc=711)
+        abomsreq.consume_to_abom()
     except Exception as e:
         print(f'An error occurred while running script: {e}')
 
